@@ -1,35 +1,42 @@
 package net.grigoriadi;
 
+import javax.json.bind.Jsonb;
+import javax.json.bind.JsonbBuilder;
+import javax.json.bind.JsonbConfig;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 public class NodeColorService implements NodeColorChangeObservable, NodeColorChangeObserver {
 
+    private final Context context;
+
+    private final Jsonb jsonb = JsonbBuilder.create(new JsonbConfig());
+
     private final List<NodeColorChangeObserver> observers = new ArrayList<>();
-
-    private Node root;
-
-    private Map<NodeId, Node> nodeMapping = new HashMap<>();
-
 
 
     public NodeColorService(Map<NodeId, List<NodeId>> initMap, List<NodeColor> initColors) {
+        this.context = Context.getInstance();
         for (Map.Entry<NodeId, List<NodeId>> entry : initMap.entrySet()) {
             //this need more elaboration, to update root according to content, but just for case of the example..
-            if (root == null) {
-                root = new Node(entry.getKey());
-                nodeMapping.put(root.getNodeId(), root);
+            if (context.getRoot() == null) {
+                Node root = new Node(entry.getKey());
+                context.setRoot(root);
+                context.getNodeMapping().put(root.getNodeId(), root);
                 addChildren(root, entry.getValue());
                 continue;
             }
 
-            addChildren(root, entry.getKey(), entry.getValue());
+            addChildren(context.getRoot(), entry.getKey(), entry.getValue());
         }
         for (NodeColor color : initColors) {
-            nodeMapping.get(color.getNodeId()).setNodeColor(color);
+            context.getNodeMapping().get(color.getNodeId())
+                    .setNodeColor(new PriorityColor(color.getColor(), color.getPriority()));
         }
+
+        System.out.println("Initial tree:");
+        printTree();
     }
 
     @Override
@@ -39,33 +46,41 @@ public class NodeColorService implements NodeColorChangeObservable, NodeColorCha
 
     @Override
     public void colorChanged(NodeColor color) {
-        System.out.println("Changing color:");
-        Node node = nodeMapping.get(color.getNodeId());
-
-        NodeColor highestPriorityColor = null;
-
-        while (node != null) {
-            highestPriorityColor = highestPriorityColor == null ?
-                    color : newHighestPriorityColor(node.getNodeColor(), highestPriorityColor);
-            observeColor(new NodeColor(node.getNodeId(), highestPriorityColor.getColor(), highestPriorityColor.getPriority()));
-            node = node.getParent();
-        }
-        System.out.println("Color changed. ");
+        System.out.println("Changing color: "+color.getNodeId() +" "+color.getColor() + " Priority: "+color.getPriority());
+        Node node = context.getNodeMapping().get(color.getNodeId());
+        node.setCurrentColor(new PriorityColor(color.getColor(), color.getPriority()));
+        context.getRoot().recalculateBranch();
+        System.out.println("Tree after recalculation:");
+        printTree();
+        notifyObservers();
     }
 
-    private void observeColor(NodeColor color) {
-        for (NodeColorChangeObserver observer : observers) {
-            observer.colorChanged(color);
-        }
+    private void printTree() {
+        System.out.println(jsonb.toJson(context.getRoot()));
+        System.out.println();
     }
 
-    private NodeColor newHighestPriorityColor(NodeColor first, NodeColor second) {
-        if (first.getPriority() > second.getPriority()) {
-            return new NodeColor(first);
-        } else {
-            return new NodeColor(second);
+    private void notifyObservers() {
+        EventCandidate eventCandidate;
+        //first priority queue orders events to print by their level in tree, so deepest leaves are print first.
+        while ((eventCandidate = context.getEventQueue().poll()) != null) {
+            //don't sent events for nodes, which haven't effectively changed their values
+            PriorityColor lastSent = context.getLastDataSent().get(eventCandidate.getNodeId());
+            if (lastSent != null
+                    && eventCandidate.getPriorityColor().equals(lastSent)) {
+                continue;
+            }
+            for (NodeColorChangeObserver observer : observers) {
+                observer.colorChanged(new NodeColor(eventCandidate.getNodeId(),
+                        eventCandidate.getPriorityColor().getColor(),
+                        eventCandidate.getPriorityColor().getPriority()));
+                //cache values of last sent events, so we don't send events for the nodes which changed to the same values.
+                context.getLastDataSent().put(eventCandidate.getNodeId(), eventCandidate.getPriorityColor());
+            }
         }
+        System.out.println("==================EVENTS FINISHED====================\n\n");
     }
+
 
     private void addChildren(Node node, NodeId id, List<NodeId> children) {
         if (node.getNodeId().equals(id)) {
@@ -83,7 +98,7 @@ public class NodeColorService implements NodeColorChangeObservable, NodeColorCha
             Node newNode = new Node(child);
             newNode.setParent(node);
             node.addChild(newNode);
-            nodeMapping.put(child, newNode);
+            context.getNodeMapping().put(child, newNode);
         }
     }
 

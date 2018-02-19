@@ -17,6 +17,10 @@ public class NodeId {
         return id == nodeId.id;
     }
 
+    public long getId() {
+        return id;
+    }
+
     @Override
     public int hashCode() {
 
